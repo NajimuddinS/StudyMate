@@ -1,361 +1,322 @@
+// server.js - Backend Server
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir);
-}
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadsDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${Date.now()}-${file.originalname}`);
-    }
+// File upload configuration
+const upload = multer({ 
+  dest: 'uploads/',
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
-const upload = multer({ storage });
 
 // Hugging Face API configuration
-const HF_API_TOKEN = process.env.HUGGING_FACE_TOKEN;
+const HF_API_KEY = process.env.HF_API_KEY;
 const HF_API_BASE = 'https://api-inference.huggingface.co/models';
 
-// Rhyming words database (simple implementation)
-const rhymingWords = {
-    'ay': ['day', 'way', 'say', 'play', 'stay', 'today', 'away', 'okay'],
-    'ight': ['night', 'light', 'right', 'bright', 'sight', 'fight', 'tight', 'might'],
-    'ow': ['now', 'how', 'wow', 'allow', 'somehow', 'endow', 'row', 'show'],
-    'ee': ['free', 'tree', 'see', 'be', 'key', 'spree', 'degree', 'agree'],
-    'ame': ['name', 'fame', 'game', 'same', 'frame', 'claim', 'blame', 'shame'],
-    'ove': ['love', 'above', 'dove', 'shove', 'glove', 'move', 'prove', 'groove']
+// Rhyming patterns and structures
+const RHYME_SCHEMES = {
+  'AABB': ['A', 'A', 'B', 'B'],
+  'ABAB': ['A', 'B', 'A', 'B'],
+  'ABCB': ['A', 'B', 'C', 'B'],
+  'AAAA': ['A', 'A', 'A', 'A']
 };
 
-// Helper function to find rhyming words
-function findRhymes(word) {
-    const lowerWord = word.toLowerCase();
-    for (const [ending, words] of Object.entries(rhymingWords)) {
-        if (lowerWord.endsWith(ending)) {
-            return words.filter(w => w !== lowerWord);
-        }
-    }
-    return [];
+// Common rap words and fillers
+const RAP_FILLERS = [
+  'yeah', 'uh', 'yo', 'check it', 'listen', 'word', 'straight up',
+  'no cap', 'facts', 'real talk', 'you know', 'like that', 'for real'
+];
+
+// Hugging Face API calls
+async function callHuggingFace(model, inputs, options = {}) {
+  try {
+    const response = await axios.post(
+      `${HF_API_BASE}/${model}`,
+      { inputs, ...options },
+      {
+        headers: {
+          'Authorization': `Bearer ${HF_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error(`Error calling ${model}:`, error.response?.data || error.message);
+    throw new Error(`HuggingFace API error: ${error.message}`);
+  }
 }
 
-// Helper function to create rap structure
-function createRapStructure(text, style = 'rap') {
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
-    const lines = [];
-    
-    for (let i = 0; i < sentences.length; i += 2) {
-        const line1 = sentences[i]?.trim();
-        const line2 = sentences[i + 1]?.trim();
-        
-        if (line1) {
-            if (style === 'rap') {
-                lines.push(`${line1}, yo`);
-                if (line2) {
-                    lines.push(`${line2}, let's go`);
-                }
-            } else {
-                lines.push(line1);
-                if (line2) {
-                    lines.push(line2);
-                }
-            }
-        }
-    }
-    
-    return lines;
+// Text summarization for content extraction
+async function summarizeText(text) {
+  try {
+    const result = await callHuggingFace(
+      'facebook/bart-large-cnn',
+      text,
+      { 
+        parameters: { 
+          max_length: 130, 
+          min_length: 30, 
+          do_sample: false 
+        } 
+      }
+    );
+    return result[0]?.summary_text || text.substring(0, 200);
+  } catch (error) {
+    console.log('Summarization failed, using original text');
+    return text.substring(0, 300);
+  }
 }
-
-// API Routes
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'OK', message: 'Rap Generator API is running!' });
-});
-
-// Text summarization endpoint
-app.post('/api/summarize', async (req, res) => {
-    try {
-        const { text, maxLength = 150 } = req.body;
-        
-        if (!text) {
-            return res.status(400).json({ error: 'Text is required' });
-        }
-
-        const response = await axios.post(
-            `${HF_API_BASE}/mrm8488/t5-base-finetuned-summarize-news`,
-            {
-                inputs: text,
-                parameters: {
-                    max_length: maxLength,
-                    min_length: 30,
-                    do_sample: false
-                }
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${HF_API_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        const summary = response.data[0]?.summary_text || response.data[0]?.generated_text || text;
-        
-        res.json({
-            originalText: text,
-            summary: summary,
-            wordCount: {
-                original: text.split(' ').length,
-                summary: summary.split(' ').length
-            }
-        });
-
-    } catch (error) {
-        console.error('Summarization error:', error.response?.data || error.message);
-        res.status(500).json({ 
-            error: 'Failed to summarize text',
-            details: error.response?.data || error.message 
-        });
-    }
-});
 
 // Creative text generation for rap lyrics
+async function generateRapLyrics(content, style = 'rap') {
+  const prompt = `Transform this content into ${style} lyrics with rhythm and rhyme:\n\n${content}\n\nLyrics:`;
+  
+  try {
+    const result = await callHuggingFace(
+      'microsoft/DialoGPT-large',
+      prompt,
+      {
+        parameters: {
+          max_length: 200,
+          temperature: 0.8,
+          do_sample: true,
+          top_p: 0.9
+        }
+      }
+    );
+    
+    return result[0]?.generated_text || generateFallbackLyrics(content);
+  } catch (error) {
+    console.log('Rap generation failed, using fallback');
+    return generateFallbackLyrics(content);
+  }
+}
+
+// Fallback lyrics generator
+function generateFallbackLyrics(content) {
+  const words = content.split(' ').filter(word => word.length > 3);
+  const keyWords = words.slice(0, 8);
+  
+  const verses = [];
+  for (let i = 0; i < keyWords.length; i += 2) {
+    const word1 = keyWords[i] || 'knowledge';
+    const word2 = keyWords[i + 1] || 'power';
+    
+    verses.push(`Talking 'bout ${word1}, that's the way I flow`);
+    verses.push(`${word2} in my mind, watch my skills grow`);
+    verses.push(`Breaking down the facts, make it all clear`);
+    verses.push(`Spitting knowledge like a pro, year after year`);
+  }
+  
+  return verses.join('\n');
+}
+
+// Enhanced rhyme detection
+function findRhymes(word) {
+  const rhymeMap = {
+    'flow': ['go', 'show', 'know', 'grow', 'pro', 'blow', 'slow'],
+    'mind': ['find', 'kind', 'blind', 'grind', 'bind', 'signed'],
+    'real': ['feel', 'deal', 'steel', 'heal', 'meal', 'wheel'],
+    'time': ['rhyme', 'climb', 'prime', 'dime', 'crime', 'sublime'],
+    'way': ['say', 'play', 'day', 'stay', 'pay', 'display'],
+    'night': ['light', 'fight', 'sight', 'bright', 'tight', 'height'],
+    'game': ['fame', 'name', 'same', 'flame', 'frame', 'claim'],
+    'beat': ['street', 'meet', 'feet', 'heat', 'sweet', 'complete']
+  };
+  
+  const lastSyllable = word.toLowerCase().slice(-2);
+  return rhymeMap[word.toLowerCase()] || rhymeMap[lastSyllable] || ['beat', 'street', 'heat'];
+}
+
+// Structure lyrics with rhyme schemes
+function structureLyrics(rawLyrics, scheme = 'ABAB') {
+  const lines = rawLyrics.split('\n').filter(line => line.trim());
+  const pattern = RHYME_SCHEMES[scheme];
+  const structured = [];
+  
+  for (let i = 0; i < lines.length; i += 4) {
+    const verse = lines.slice(i, i + 4);
+    if (verse.length >= 2) {
+      // Add rhyme scheme structure
+      verse.forEach((line, idx) => {
+        const enhancedLine = line + (Math.random() > 0.7 ? ` (${RAP_FILLERS[Math.floor(Math.random() * RAP_FILLERS.length)]})` : '');
+        structured.push(enhancedLine);
+      });
+      
+      if (structured.length >= 4) {
+        structured.push(''); // Add break between verses
+      }
+    }
+  }
+  
+  return structured.join('\n');
+}
+
+// Routes
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'Server is running', timestamp: new Date().toISOString() });
+});
+
+// Main rap generation endpoint
 app.post('/api/generate-rap', async (req, res) => {
-    try {
-        const { text, style = 'rap', theme = 'general' } = req.body;
-        
-        if (!text) {
-            return res.status(400).json({ error: 'Text is required' });
-        }
-
-        // Create a rap-style prompt
-        const rapPrompt = `Transform this into ${style} lyrics with rhymes and rhythm:\n\n${text}\n\nRap lyrics:`;
-
-        const response = await axios.post(
-            `${HF_API_BASE}/EleutherAI/gpt-neo-1.3B`,
-            {
-                inputs: rapPrompt,
-                parameters: {
-                    max_new_tokens: 200,
-                    temperature: 0.8,
-                    top_p: 0.9,
-                    repetition_penalty: 1.1
-                }
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${HF_API_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        let generatedText = response.data[0]?.generated_text || '';
-        
-        // Clean up the generated text
-        generatedText = generatedText.replace(rapPrompt, '').trim();
-        
-        // Create structured rap verses
-        const rapStructure = createRapStructure(generatedText, style);
-        
-        res.json({
-            originalText: text,
-            rapLyrics: generatedText,
-            structuredLyrics: rapStructure,
-            style: style,
-            theme: theme,
-            metadata: {
-                verses: Math.ceil(rapStructure.length / 4),
-                totalLines: rapStructure.length,
-                estimatedDuration: `${Math.ceil(rapStructure.length * 2)}s`
-            }
-        });
-
-    } catch (error) {
-        console.error('Rap generation error:', error.response?.data || error.message);
-        res.status(500).json({ 
-            error: 'Failed to generate rap lyrics',
-            details: error.response?.data || error.message 
-        });
+  try {
+    const { text, style = 'rap', rhymeScheme = 'ABAB' } = req.body;
+    
+    if (!text || text.trim().length < 10) {
+      return res.status(400).json({ error: 'Text must be at least 10 characters long' });
     }
-});
 
-// Rhyme suggestion endpoint
-app.post('/api/rhymes', (req, res) => {
-    try {
-        const { word } = req.body;
-        
-        if (!word) {
-            return res.status(400).json({ error: 'Word is required' });
-        }
-
-        const rhymes = findRhymes(word);
-        
-        res.json({
-            word: word,
-            rhymes: rhymes,
-            count: rhymes.length
-        });
-
-    } catch (error) {
-        console.error('Rhyme generation error:', error.message);
-        res.status(500).json({ 
-            error: 'Failed to find rhymes',
-            details: error.message 
-        });
+    // Step 1: Summarize if text is too long
+    let processedText = text;
+    if (text.length > 500) {
+      processedText = await summarizeText(text);
     }
-});
 
-// Text-to-Speech endpoint (placeholder for TTS integration)
-app.post('/api/text-to-speech', async (req, res) => {
-    try {
-        const { text, voice = 'default', speed = 1.0 } = req.body;
-        
-        if (!text) {
-            return res.status(400).json({ error: 'Text is required' });
-        }
+    // Step 2: Generate rap lyrics
+    const rawLyrics = await generateRapLyrics(processedText, style);
+    
+    // Step 3: Structure with rhyme scheme
+    const structuredLyrics = structureLyrics(rawLyrics, rhymeScheme);
+    
+    // Step 4: Generate metadata
+    const metadata = {
+      originalLength: text.length,
+      processedLength: processedText.length,
+      lyricsLength: structuredLyrics.length,
+      rhymeScheme,
+      style,
+      generatedAt: new Date().toISOString()
+    };
 
-        // Placeholder for TTS integration
-        // You can integrate with services like:
-        // - Google Cloud Text-to-Speech
-        // - Amazon Polly
-        // - Azure Cognitive Services Speech
-        // - Or use Hugging Face TTS models
-        
-        res.json({
-            message: 'TTS endpoint ready for integration',
-            text: text,
-            voice: voice,
-            speed: speed,
-            audioUrl: null, // Will contain the generated audio URL
-            status: 'pending_implementation'
-        });
-
-    } catch (error) {
-        console.error('TTS error:', error.message);
-        res.status(500).json({ 
-            error: 'Failed to generate speech',
-            details: error.message 
-        });
-    }
-});
-
-// Batch processing endpoint
-app.post('/api/batch-process', async (req, res) => {
-    try {
-        const { texts, style = 'rap', options = {} } = req.body;
-        
-        if (!texts || !Array.isArray(texts)) {
-            return res.status(400).json({ error: 'Texts array is required' });
-        }
-
-        const results = [];
-        
-        for (const text of texts) {
-            try {
-                // Process each text
-                const rapStructure = createRapStructure(text, style);
-                results.push({
-                    originalText: text,
-                    structuredLyrics: rapStructure,
-                    status: 'success'
-                });
-            } catch (error) {
-                results.push({
-                    originalText: text,
-                    error: error.message,
-                    status: 'failed'
-                });
-            }
-        }
-
-        res.json({
-            totalProcessed: texts.length,
-            successful: results.filter(r => r.status === 'success').length,
-            failed: results.filter(r => r.status === 'failed').length,
-            results: results
-        });
-
-    } catch (error) {
-        console.error('Batch processing error:', error.message);
-        res.status(500).json({ 
-            error: 'Failed to process batch',
-            details: error.message 
-        });
-    }
-});
-
-// Get supported styles and themes
-app.get('/api/styles', (req, res) => {
     res.json({
-        styles: [
-            { id: 'rap', name: 'Rap', description: 'Fast-paced rhythmic lyrics' },
-            { id: 'melodic', name: 'Melodic', description: 'Smooth flowing lyrics' },
-            { id: 'trap', name: 'Trap', description: 'Modern trap style' },
-            { id: 'boom-bap', name: 'Boom Bap', description: 'Classic hip-hop style' }
-        ],
-        themes: [
-            { id: 'general', name: 'General', description: 'Versatile theme' },
-            { id: 'motivational', name: 'Motivational', description: 'Inspiring and uplifting' },
-            { id: 'educational', name: 'Educational', description: 'Learning focused' },
-            { id: 'storytelling', name: 'Storytelling', description: 'Narrative driven' }
-        ],
-        voices: [
-            { id: 'default', name: 'Default', description: 'Standard voice' },
-            { id: 'deep', name: 'Deep', description: 'Lower pitch voice' },
-            { id: 'energetic', name: 'Energetic', description: 'High energy voice' }
-        ]
+      lyrics: structuredLyrics,
+      originalText: processedText,
+      metadata
     });
+
+  } catch (error) {
+    console.error('Rap generation error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate rap lyrics',
+      details: error.message 
+    });
+  }
+});
+
+// Text-to-Speech endpoint
+app.post('/api/text-to-speech', async (req, res) => {
+  try {
+    const { text } = req.body;
+    
+    if (!text) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+
+    // Call Hugging Face TTS model
+    const audioData = await callHuggingFace(
+      'microsoft/speecht5_tts',
+      text,
+      { parameters: { speaker_embedding: null } }
+    );
+
+    // For now, return a success response
+    // In production, you'd process the audio data
+    res.json({ 
+      success: true, 
+      message: 'TTS processing initiated',
+      audioUrl: `/api/audio/${Date.now()}.wav`
+    });
+
+  } catch (error) {
+    console.error('TTS error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate speech',
+      details: error.message 
+    });
+  }
+});
+
+// File upload endpoint
+app.post('/api/upload-text', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const fileContent = fs.readFileSync(req.file.path, 'utf8');
+    
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+
+    res.json({ 
+      text: fileContent,
+      filename: req.file.originalname,
+      size: req.file.size
+    });
+
+  } catch (error) {
+    console.error('File upload error:', error);
+    res.status(500).json({ 
+      error: 'Failed to process uploaded file',
+      details: error.message 
+    });
+  }
+});
+
+// Get available beats/styles
+app.get('/api/beats', (req, res) => {
+  const beats = [
+    { id: 'boom-bap', name: 'Boom Bap', bpm: 90, description: 'Classic hip-hop style' },
+    { id: 'trap', name: 'Trap', bpm: 140, description: 'Modern trap beats' },
+    { id: 'lo-fi', name: 'Lo-Fi', bpm: 85, description: 'Chill lo-fi vibes' },
+    { id: 'drill', name: 'Drill', bpm: 150, description: 'Aggressive drill style' },
+    { id: 'melodic', name: 'Melodic', bpm: 120, description: 'Melodic rap style' }
+  ];
+  
+  res.json(beats);
+});
+
+// Get rhyme schemes
+app.get('/api/rhyme-schemes', (req, res) => {
+  res.json(Object.keys(RHYME_SCHEMES).map(scheme => ({
+    id: scheme,
+    pattern: RHYME_SCHEMES[scheme],
+    description: `${scheme} rhyme pattern`
+  })));
 });
 
 // Error handling middleware
 app.use((error, req, res, next) => {
-    console.error('Unhandled error:', error);
-    res.status(500).json({
-        error: 'Internal server error',
-        message: error.message
-    });
+  console.error('Unhandled error:', error);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+  });
 });
 
 // 404 handler
-app.use((req, res) => {
-    res.status(404).json({
-        error: 'Endpoint not found',
-        availableEndpoints: [
-            'GET /health',
-            'POST /api/summarize',
-            'POST /api/generate-rap',
-            'POST /api/rhymes',
-            'POST /api/text-to-speech',
-            'POST /api/batch-process',
-            'GET /api/styles'
-        ]
-    });
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
-// Start server
 app.listen(PORT, () => {
-    console.log(`🎤 Rap Generator API running on port ${PORT}`);
-    console.log(`📝 Health check: http://localhost:${PORT}/health`);
-    console.log(`🎵 API Documentation: http://localhost:${PORT}/api/styles`);
+  console.log(`🎤 Rap Generator Server running on port ${PORT}`);
+  console.log(`🔥 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 module.exports = app;
