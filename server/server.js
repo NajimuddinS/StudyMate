@@ -150,7 +150,7 @@ app.post('/api/generate-rap', async (req, res) => {
         const rapPrompt = `Transform this into ${style} lyrics with rhymes and rhythm:\n\n${text}\n\nRap lyrics:`;
 
         const response = await axios.post(
-            `${HF_API_BASE}/Gustavosta/EleutherAI-gpt-neo-1.3B-creative-writing`,
+            `${HF_API_BASE}/EleutherAI/gpt-neo-1.3B`,
             {
                 inputs: rapPrompt,
                 parameters: {
